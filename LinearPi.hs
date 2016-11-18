@@ -3,6 +3,7 @@ module LinearPi where
 import qualified Data.Set as S
 import qualified Data.Map as M
 import Control.Monad (liftM, ap)
+import System.Exit
 
 --------------------------------------------------------------------------------
 -- Error monad for this implementation
@@ -221,4 +222,35 @@ check env t = case t of
             return env'
         else do
             Error "check: if-guard was not boolean"
-        
+
+
+--------------------------------------------------------------------------------
+-- A main function with some tests
+--------------------------------------------------------------------------------
+
+main :: IO ExitCode
+main = let result = check M.empty p in case result of
+    Error   s -> do
+        putStrLn $ "Test failed - " ++ s
+        exitFailure
+    NoError _ -> do
+        putStrLn "Test passed."
+        exitSuccess
+
+p :: Term
+p = New 0 (Channel inout One [Boolean])
+        (New 1 (Channel inout One [Boolean])
+            (Parallel
+                (Parallel
+                    (Output 0 [Literal True ])
+                    (Output 1 [Literal False])
+                )
+                (Input False 0 [(2, Boolean)]
+                    (Input False 1 [(3, Boolean)]
+                        (New 4 (Channel dead Unlim [Boolean])
+                            (Output 4 [Literal True])
+                        )
+                    )
+                )
+            )
+        )
