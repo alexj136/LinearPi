@@ -2,6 +2,7 @@ module LinearPi where
 
 import qualified Data.Set as S
 import qualified Data.Map as M
+import Data.List (intersperse)
 import Control.Monad (liftM, ap)
 import System.Exit
 
@@ -38,25 +39,47 @@ data Term
     | Input Bool Name [(Name, Type)] Term
     | New Name Type Term
     | If Expression Term Term
-    deriving (Show, Eq, Ord)
+    deriving (Eq, Ord)
+
+instance Show Term where
+    show (Parallel p1 p2)  = show p1 ++ " | " ++ show p2
+    show (Output n es)     = show n ++ "!" ++ show es
+    show (Input r n ets p) =
+        show n ++ "?" ++ (if r then "*" else "") ++ show ets ++ "." ++ show p
+    show (New n t p)       = "(ν" ++ show n ++ ": " ++ show t ++ ")" ++ show p
+    show (If e p1 p2)      =
+        "if " ++ show e ++ " then " ++ show p1 ++ " else " ++ show p2
 
 data Expression = Variable Name | Literal Bool
-    deriving (Show, Eq, Ord)
+    deriving (Eq, Ord)
+
+instance Show Expression where
+    show (Literal True ) = "true"
+    show (Literal False) = "false"
+    show (Variable n   ) = show n
 
 --------------------------------------------------------------------------------
 -- Type definitions
 --------------------------------------------------------------------------------
 
 data Type = Boolean | Channel Polarity Multiplicity [Type]
-    deriving (Show, Eq, Ord)
+    deriving (Eq, Ord)
+
+instance Show Type where
+    show Boolean = "bool"
+    show (Channel pol mul ts) = showPol pol ++ show mul ++ show ts
 
 type Polarity = S.Set Direction
 
 data Direction = In | Out
     deriving (Show, Eq, Ord)
 
-data Multiplicity = One | Unlim
-    deriving (Show, Eq, Ord)
+data Multiplicity = Lin | Unlim
+    deriving (Eq, Ord)
+
+instance Show Multiplicity where
+    show Lin   = "1"
+    show Unlim = "ω"
 
 input  :: Polarity
 input  = S.singleton In
@@ -71,14 +94,22 @@ polarity :: Type -> Result Polarity
 polarity (Channel p _ _) = return p
 polarity Boolean         = Error "polarity: booleans have no polarity"
 
+showPol :: Polarity -> String
+showPol p
+    | p == input  = "↓"
+    | p == output = "↑"
+    | p == inout  = "↑↓"
+    | p == dead   = "|"
+
 combine :: Type -> Type -> Result Type
 combine Boolean Boolean = return Boolean
 combine (Channel p1 Unlim ts1) (Channel p2 Unlim ts2) | ts1 == ts2 =
     return $ Channel (p1 `S.union` p2) Unlim ts1
-combine (Channel p1 One   ts1) (Channel p2 One   ts2) | ts1 == ts2
+combine (Channel p1 Lin   ts1) (Channel p2 Lin   ts2) | ts1 == ts2
     && S.intersection p1 p2 == S.empty =
-        return $ Channel (p1 `S.union` p2) One ts1
-combine _ _ = Error "combine: incompatible types"
+        return $ Channel (p1 `S.union` p2) Lin ts1
+combine t1 t2 = Error $
+    "combine: incompatible types: " ++ show t1 ++ ", " ++ show t2
 
 -- Combine two types, but without knowing the multiplicity of the second,
 -- defaulting to the multiplicity from the first.
@@ -90,16 +121,21 @@ diff Boolean Boolean = return Boolean
 diff (Channel p1 Unlim ts1) (Channel p2 Unlim ts2) | ts1 == ts2 &&
     p2 `S.isSubsetOf` p1 =
         return $ Channel p1 Unlim ts1
-diff (Channel p1 One ts1  ) (Channel p2 One ts2  ) | ts1 == ts2 &&
+diff (Channel p1 Lin ts1  ) (Channel p2 Lin ts2  ) | ts1 == ts2 &&
     p2 `S.isSubsetOf` p1 =
-        return $ Channel (S.filter (\e -> S.notMember e p2) p1) One ts1
-diff _ _ = Error "diff: incompatible types"
+        return $ Channel (S.filter (\e -> S.notMember e p2) p1) Lin ts1
+diff t1 t2 = Error $
+    "diff: incompatible types: " ++ show t1 ++ ", " ++ show t2
 
 --------------------------------------------------------------------------------
 -- Type environment definitions
 --------------------------------------------------------------------------------
 
 type Env = M.Map Name Type
+
+showEnv :: Env -> String
+showEnv = concat . intersperse ", "
+    . map (\(n,t) -> show n ++ ": " ++ show t). M.toList
 
 envLookup :: Env -> Name -> Result Type
 envLookup env n = case M.lookup n env of
@@ -142,12 +178,11 @@ envDiff :: Name -> Type -> Env -> Result Env
 envDiff = envInsertWith diff
 
 unlimited :: Env -> Bool
-unlimited = null . filter (not . unlimOrDead) . map snd . M.toList where
-    unlimOrDead :: Type -> Bool
-    unlimOrDead t = case t of
-        Channel _ Unlim _                -> True
-        Channel p _     _ | p == S.empty -> True
-        _                                -> False
+unlimited = all $ \t -> case t of
+    Channel _ Unlim _             -> True
+    Channel p _     _ | p == dead -> True
+    Boolean                       -> True
+    _                             -> False
 
 envUnion :: Env -> Env -> Result Env
 envUnion e1 e2 | M.keysSet e1 == M.keysSet e2 =
@@ -189,7 +224,9 @@ check env t = case t of
         env'  <- envCombinePartial n (output, tes) env
         env'' <- envCombineAll (dropLits (zip es tes)) env'
         return env''
-    Output _ _  | otherwise -> Error "check: Output with limited environment"
+    Output _ _  | otherwise -> Error $
+        "check: Output with limited environment Γ = " ++ showEnv env ++
+        " with term " ++ show t
 
     Input False n nts p -> do
         env' <- envInsertMany nts env
@@ -238,8 +275,8 @@ main = let result = check M.empty p in case result of
         exitSuccess
 
 p :: Term
-p = New 0 (Channel inout One [Boolean])
-        (New 1 (Channel inout One [Boolean])
+p = New 0 (Channel inout Lin [Boolean])
+        (New 1 (Channel inout Lin [Boolean])
             (Parallel
                 (Parallel
                     (Output 0 [Literal True ])
