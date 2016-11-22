@@ -30,6 +30,10 @@ instance Monad Result where
 
 type Name = Int
 
+showName :: Name -> String
+showName n = case n of { 0 -> "x" ; 1 -> "y" ; 2 -> "z" ;
+                       ; 3 -> "a" ; 4 -> "b" ; 5 -> "c" ; _ -> "n" ++ show n }
+
 data Term
     = Parallel Term Term
     | Output Name [Expression]
@@ -43,10 +47,11 @@ data Term
 
 instance Show Term where
     show (Parallel p1 p2)  = show p1 ++ " | " ++ show p2
-    show (Output n es)     = show n ++ "!" ++ show es
-    show (Input r n ets p) =
-        show n ++ "?" ++ (if r then "*" else "") ++ show ets ++ "." ++ show p
-    show (New n t p)       = "(ν" ++ show n ++ ": " ++ show t ++ ")" ++ show p
+    show (Output n es)     = showName n ++ "!" ++ show es
+    show (Input r n ets p) = showName n ++ "?" ++ (if r then "*" else "")
+        ++ "[" ++ concat (intersperse ", " (map (\(n, t) -> showName n ++ ": " ++ show t) ets)) ++ "]." ++ show p
+    show (New n t p)       =
+        "(new " ++ showName n ++ ": " ++ show t ++ ")" ++ show p
     show (If e p1 p2)      =
         "if " ++ show e ++ " then " ++ show p1 ++ " else " ++ show p2
 
@@ -56,7 +61,7 @@ data Expression = Variable Name | Literal Bool
 instance Show Expression where
     show (Literal True ) = "true"
     show (Literal False) = "false"
-    show (Variable n   ) = show n
+    show (Variable n   ) = showName n
 
 --------------------------------------------------------------------------------
 -- Type definitions
@@ -79,7 +84,7 @@ data Multiplicity = Lin | Unlim
 
 instance Show Multiplicity where
     show Lin   = "1"
-    show Unlim = "ω"
+    show Unlim = "+"
 
 input  :: Polarity
 input  = S.singleton In
@@ -219,7 +224,7 @@ check env t = case t of
         env'' <- check env' q
         envUnion env' env''
 
-    Output n es | unlimited env -> do
+    Output n es {-| unlimited env-} -> do
         tes   <- sequence $ map (checkExp env) es
         env'  <- envCombinePartial n (output, tes) env
         env'' <- envCombineAll (dropLits (zip es tes)) env'
@@ -269,6 +274,7 @@ main :: IO ExitCode
 main = let result = check M.empty p in case result of
     Error   s -> do
         putStrLn $ "Test failed - " ++ s
+        putStrLn $ "Original program: " ++ show p
         exitFailure
     NoError _ -> do
         putStrLn "Test passed."
