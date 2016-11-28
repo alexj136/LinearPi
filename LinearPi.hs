@@ -3,6 +3,7 @@ module LinearPi where
 import qualified Data.Set as S
 import qualified Data.Map as M
 import Data.List (intersperse)
+import Data.Maybe (catMaybes)
 import Control.Monad (liftM, ap)
 import System.Exit
 
@@ -23,6 +24,10 @@ instance Monad Result where
     (>>=) (Error   s) f = Error s
     (>>=) (NoError r) f = f r
     return = NoError
+
+fromResult :: Result a -> a
+fromResult (NoError a) = a
+fromResult (Error   e) = error e
 
 --------------------------------------------------------------------------------
 -- Term definitions
@@ -49,7 +54,8 @@ instance Show Term where
     show (Parallel p1 p2)  = show p1 ++ " | " ++ show p2
     show (Output n es)     = showName n ++ "!" ++ show es
     show (Input r n ets p) = showName n ++ "?" ++ (if r then "*" else "")
-        ++ "[" ++ concat (intersperse ", " (map (\(n, t) -> showName n ++ ": " ++ show t) ets)) ++ "]." ++ show p
+        ++ "[" ++ concat (intersperse ", " (map (\(n, t) -> showName n
+        ++ ": " ++ show t) ets)) ++ "]." ++ show p
     show (New n t p)       =
         "(new " ++ showName n ++ ": " ++ show t ++ ")" ++ show p
     show (If e p1 p2)      =
@@ -77,7 +83,11 @@ instance Show Type where
 type Polarity = S.Set Direction
 
 data Direction = In | Out
-    deriving (Show, Eq, Ord)
+    deriving (Eq, Ord)
+
+instance Show Direction where
+    show In = "input"
+    show Out = "output"
 
 data Multiplicity = Lin | Unlim
     deriving (Eq, Ord)
@@ -101,10 +111,10 @@ polarity Boolean         = Error "polarity: booleans have no polarity"
 
 showPol :: Polarity -> String
 showPol p
-    | p == input  = "↓"
-    | p == output = "↑"
-    | p == inout  = "↑↓"
-    | p == dead   = "|"
+    | p == input  = "input"
+    | p == output = "output"
+    | p == inout  = "inout"
+    | p == dead   = "dead"
 
 combine :: Type -> Type -> Result Type
 combine Boolean Boolean = return Boolean
@@ -189,6 +199,10 @@ unlimited = all $ \t -> case t of
     Boolean                       -> True
     _                             -> False
 
+assertUnlimited :: Env -> Result ()
+assertUnlimited env | unlimited env = return ()
+assertUnlimited env | otherwise     = Error "assertUnlimited: assertion failed"
+
 envUnion :: Env -> Env -> Result Env
 envUnion e1 e2 | M.keysSet e1 == M.keysSet e2 =
     let keys       = map fst (M.assocs e1)
@@ -201,6 +215,51 @@ envUnion e1 e2 | M.keysSet e1 == M.keysSet e2 =
     in newMap
 envUnion _  _  | otherwise                    =
     Error "envUnion: union of incompatible environments"
+
+-- Assert that a given name has a given capability in the given environment
+capabilityAssert :: Env -> Name -> Direction -> Result ()
+capabilityAssert env n dir = do
+    ty <- envLookup env n
+    case ty of
+        Channel pol _ _ | S.member dir pol -> return ()
+        t -> Error $ "capabilityAssert: assertion failed - " ++ show n ++
+            ": " ++ show t ++ " - asserted " ++ show dir ++ " capability"
+
+-- Split a polarity for left and right side parallel composition
+polSplits :: Polarity -> [(Polarity, Polarity)]
+polSplits p | p == input  =
+                [ (input , dead  )
+                , (dead  , input )
+                ]
+           | p == output =
+                [ (output, dead  )
+                , (dead  , output)
+                ]
+           | p == dead   =
+                [ (dead  , dead  )
+                ]
+           | p == inout  =
+                [ (input , output)
+                , (output, input )
+                , (inout , dead  )
+                , (dead  , inout )
+                ]
+
+-- Split a type for left and right side parallel composition
+tySplits :: Type -> [(Type, Type)]
+tySplits t@Boolean                = [(t, t)]
+tySplits t@(Channel _   Unlim _ ) = [(t, t)]
+tySplits t@(Channel pol Lin   ts) =
+    map (\(p1, p2) -> (Channel p1 Lin ts, Channel p2 Lin ts)) (polSplits pol)
+
+envSplits :: Env -> S.Set (Env, Env)
+envSplits env = case M.toList env of
+    []            -> S.empty
+    [(x, t)]      -> S.fromList $
+        map (\(t1, t2) -> (M.singleton x t1, M.singleton x t2)) (tySplits t)
+    (x, t) : env' -> S.fromList $ concat $ map (\(e1, e2) -> map (\(t1, t2) ->
+        (M.insert x t1 e1, M.insert x t2 e2)) (tySplits t))
+        (S.toList (envSplits (M.fromList env')))
 
 --------------------------------------------------------------------------------
 -- Type checker functions
@@ -219,19 +278,26 @@ checkExp env (Variable n) = envLookup env n
 check :: Env -> Term -> Result Env
 check env t = case t of
 
-    Parallel p q -> do
-        env'  <- check env  p
-        env'' <- check env' q
-        envUnion env' env''
+    Parallel p q -> let
+        splitresults = map (\(e1, e2) -> (check e1 p, check e2 q))
+            $ S.toList $ envSplits env
+        in
+        case catMaybes $ map ( \p -> case p of
+            { (NoError e1', NoError e2') -> Just (e1', e2')
+            ; _ -> Nothing
+            } ) splitresults of
+                (e1', e2'):_ -> envUnion e1' e2'
+                [] ->
+                    Error $ "check: No successful splits in Parallel for process "
+                        ++ show t ++ ", with environment " ++ showEnv env
 
-    Output n es {-| unlimited env-} -> do
+    Output n es -> do
+        assertUnlimited $ M.delete n env
+        capabilityAssert env n Out
         tes   <- sequence $ map (checkExp env) es
         env'  <- envCombinePartial n (output, tes) env
         env'' <- envCombineAll (dropLits (zip es tes)) env'
         return env''
-    Output _ _  | otherwise -> Error $
-        "check: Output with limited environment Γ = " ++ showEnv env ++
-        " with term " ++ show t
 
     Input False n nts p -> do
         env' <- envInsertMany nts env
