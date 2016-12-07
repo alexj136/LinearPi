@@ -22,3 +22,5 @@ The rule E-Par splits the typing environment to type the left and right hand sid
 #### Session.hs
 
 This file is an implementation of the type system described by Honda, Vasconcelos & Kubo's April 1998 paper, '[Language Primitives and Type Discipline for Structured Communication-Based Programming](http://dl.acm.org/citation.cfm?id=651876)'. The paper describes a type system based on *sessions*, which are 2-way communication protocols. The type system ensures that processes behave according to a specific session, and that the communication partner has the exact complimentary session, preventing communication errors.
+
+Channels are either *typed* or *sorted*. Session channels (declared with accept and request) are typed - their types are lists of actions such as input, output, throw, catch, branch, select etcetera. Other channels that are not initiated with an accept or request are sorted, as with channels in [this](github.com/alexj136/nodes) implementation.

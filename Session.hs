@@ -1,5 +1,17 @@
 module Session where
 
+{- Here we implement the type system described in the paper. We make three main
+ - simplifications to ease the implementation burden:
+ -     1: Input & output communication is monadic - this frees us from the
+ -        burden of dealing with lists of types and expressions. It's easier to
+ -        handle just one.
+ -     2: We do not include branch/select operations - It's straightforward to
+ -        understand but creates a lot of implementation work.
+ -     3: Inputs are labelled with a type - frees us from having to do a
+ -        constraint generation and unification. We can check a process in a
+ -        single pass.
+ -}
+
 import qualified Data.Set as S
 import qualified Data.Map as M
 
@@ -10,7 +22,7 @@ data Proc
     = Request Name  Name  Proc
     | Accept  Name  Name  Proc
     | Send    Name  Exp   Proc
-    | Receive Name  Exp   Proc
+    | Receive Name  Name  Sort Proc
     | Throw   Name  Name  Proc
     | Catch   Name  Name  Proc
     | Cond    Exp   Proc  Proc
@@ -81,6 +93,9 @@ lookupProcVar = (M.!) . fst
 withoutEnvNameBinding :: Name -> Env -> Env
 withoutEnvNameBinding n e = (fst e, M.delete n $ snd e)
 
+withEnvNameBinding :: Name -> Either Sort Type -> Env -> Env
+withEnvNameBinding n t e = (fst e, M.insert n t $ snd e)
+
 coType :: Type -> Type
 coType (TReceive s t) = TSend    s (coType t)
 coType (TSend    s t) = TReceive s (coType t)
@@ -125,15 +140,20 @@ check env proc = case proc of
         Right tyKInP <- M.lookup k typingP
         return $ M.insert k (Right (TSend sortE tyKInP)) typingP
         
-    Receive k x  p -> undefined
+    Receive k x s p -> do
+        typingP <- check (withEnvNameBinding x (Left s) env) p
+        Right tyKInP <- M.lookup k typingP
+        return $ M.insert k (Right (TReceive s tyKInP)) typingP
+
     Throw   k k' p -> undefined
     Catch   k k' p -> undefined
     Cond    e p  q -> undefined
 
-    Par     p q    -> case (check env p, check env q) of
-        (Just typingP, Just typingQ) | compatible typingP typingQ ->
-            Just (composition typingP typingQ)
-        _ -> Nothing
+    Par     p q    -> do
+        typingP <- check env p
+        typingQ <- check env q
+        if compatible typingP typingQ then return $ composition typingP typingQ
+        else Nothing
 
     New     n p   -> undefined
     Def     n a p -> undefined
