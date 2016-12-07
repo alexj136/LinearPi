@@ -34,31 +34,33 @@ data Exp
 data Sort = SNat | SBool | SCoTypes Type | SVar Name | SQuant Name Sort
     deriving ( Show , Ord , Eq )
 
-sortExp :: Exp -> Maybe Sort
-sortExp e = case e of
+sortExp :: Env -> Exp -> Maybe Sort
+sortExp env exp = case exp of
     BLit  b     -> Just SBool
-    Conj  e1 e2 -> case (sortExp e1, sortExp e2) of
+    Conj  e1 e2 -> case (sortExp env e1, sortExp env e2) of
         (Just SBool, Just SBool) -> Just SBool
         _ -> Nothing
-    Disj  e1 e2 -> case (sortExp e1, sortExp e2) of
+    Disj  e1 e2 -> case (sortExp env e1, sortExp env e2) of
         (Just SBool, Just SBool) -> Just SBool
         _ -> Nothing
     ALit  i     -> Just SNat
-    Plus  e1 e2 -> case (sortExp e1, sortExp e2) of
+    Plus  e1 e2 -> case (sortExp env e1, sortExp env e2) of
         (Just SNat, Just SNat) -> Just SNat
         _ -> Nothing
-    Minus e1 e2 -> case (sortExp e1, sortExp e2) of
+    Minus e1 e2 -> case (sortExp env e1, sortExp env e2) of
         (Just SNat, Just SNat) -> Just SNat
         _ -> Nothing
-    Var   n     -> undefined
+    Var   n     -> do
+        Left sort <- lookupName env n
+        return sort
 
 data Type
-    = TReceive [Sort] Type
-    | TSend    [Sort] Type
-    | TCatch   Name   Type
-    | TThrow   Name   Type
+    = TReceive Sort Type
+    | TSend    Sort Type
+    | TCatch   Name Type
+    | TThrow   Name Type
     | TVar     Name
-    | TQuant   Name   Type
+    | TQuant   Name Type
     | TVoid
     | TBottom
     deriving ( Show , Ord , Eq )
@@ -80,12 +82,12 @@ withoutEnvNameBinding :: Name -> Env -> Env
 withoutEnvNameBinding n e = (fst e, M.delete n $ snd e)
 
 coType :: Type -> Type
-coType (TReceive ss t) = TSend    ss (coType t)
-coType (TSend    ss t) = TReceive ss (coType t)
-coType (TCatch   n  t) = TThrow   n  (coType t)
-coType (TThrow   n  t) = TCatch   n  (coType t)
-coType (TVar     n   ) = TVar     n
-coType (TQuant   n  t) = TQuant   n  (coType t)
+coType (TReceive s t) = TSend    s (coType t)
+coType (TSend    s t) = TReceive s (coType t)
+coType (TCatch   n t) = TThrow   n (coType t)
+coType (TThrow   n t) = TCatch   n (coType t)
+coType (TVar     n  ) = TVar     n
+coType (TQuant   n t) = TQuant   n (coType t)
 coType  TVoid          = TVoid
 coType  TBottom        = error "TBottom has no coType"
 
@@ -103,32 +105,36 @@ composition t1 t2
 check :: Env -> Proc -> Maybe Typing
 check env proc = case proc of
 
-    Request a k  p -> do
+    Request a k p -> do
         Left (SCoTypes t) <- lookupName env a
         typingP <- check (withoutEnvNameBinding a env) p
-        Right t' <- M.lookup k typingP
-        if t == coType t' then return $ withoutTypingBinding k typingP
+        Right tyKInP <- M.lookup k typingP
+        if t == coType tyKInP then return $ withoutTypingBinding k typingP
         else Nothing
 
-    Accept  a k  p -> do
+    Accept a k p -> do
         Left (SCoTypes t) <- lookupName env a
         typingP <- check (withoutEnvNameBinding a env) p
-        Right t' <- M.lookup k typingP
-        if t == t' then return $ withoutTypingBinding k typingP
+        Right tyKInP <- M.lookup k typingP
+        if t == tyKInP then return $ withoutTypingBinding k typingP
         else Nothing
 
-    Send    k e  p -> do
-        sortE <- sortExp e
-        Nothing
+    Send k e p -> do
+        sortE <- sortExp env e
+        typingP <- check env p
+        Right tyKInP <- M.lookup k typingP
+        return $ M.insert k (Right (TSend sortE tyKInP)) typingP
         
     Receive k x  p -> undefined
     Throw   k k' p -> undefined
     Catch   k k' p -> undefined
     Cond    e p  q -> undefined
+
     Par     p q    -> case (check env p, check env q) of
         (Just typingP, Just typingQ) | compatible typingP typingQ ->
             Just (composition typingP typingQ)
         _ -> Nothing
+
     New     n p   -> undefined
     Def     n a p -> undefined
     ProcVar n a   -> undefined
