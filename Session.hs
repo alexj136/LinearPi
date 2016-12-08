@@ -27,7 +27,7 @@ data Proc
     | Catch   Name  Name  Proc
     | Cond    Exp   Proc  Proc
     | Par     Proc  Proc
-    | New     Name  Proc
+    | New     Name  EST   Proc
     | Def     Name [Name] Proc
     | ProcVar Name [Exp ]
     | End
@@ -69,38 +69,40 @@ sortExp env exp = case exp of
 data Type
     = TReceive Sort Type
     | TSend    Sort Type
-    | TCatch   Name Type
-    | TThrow   Name Type
+    | TCatch   Type Type
+    | TThrow   Type Type
     | TVar     Name
     | TQuant   Name Type
     | TVoid
     | TBottom
     deriving ( Show , Ord , Eq )
 
-type Typing = M.Map Name (Either Sort Type)
+type EST = Either Sort Type
+
+type Typing = M.Map Name EST
 
 withoutTypingBinding :: Name -> Typing -> Typing
 withoutTypingBinding = M.delete
 
-type Env = (M.Map Name [Either Sort Type], M.Map Name (Either Sort Type))
+type Env = (M.Map Name [EST], M.Map Name EST)
 
-lookupName :: Env -> Name -> Maybe (Either Sort Type)
+lookupName :: Env -> Name -> Maybe EST
 lookupName env n = M.lookup n (snd env)
 
-lookupProcVar :: Env -> Name -> [Either Sort Type]
+lookupProcVar :: Env -> Name -> [EST]
 lookupProcVar = (M.!) . fst
 
 withoutEnvNameBinding :: Name -> Env -> Env
 withoutEnvNameBinding n e = (fst e, M.delete n $ snd e)
 
-withEnvNameBinding :: Name -> Either Sort Type -> Env -> Env
+withEnvNameBinding :: Name -> EST -> Env -> Env
 withEnvNameBinding n t e = (fst e, M.insert n t $ snd e)
 
 coType :: Type -> Type
 coType (TReceive s t) = TSend    s (coType t)
 coType (TSend    s t) = TReceive s (coType t)
-coType (TCatch   n t) = TThrow   n (coType t)
-coType (TThrow   n t) = TCatch   n (coType t)
+coType (TCatch   k t) = TThrow   k (coType t)
+coType (TThrow   k t) = TCatch   k (coType t)
 coType (TVar     n  ) = TVar     n
 coType (TQuant   n t) = TQuant   n (coType t)
 coType  TVoid          = TVoid
@@ -145,17 +147,42 @@ check env proc = case proc of
         Right tyKInP <- M.lookup k typingP
         return $ M.insert k (Right (TReceive s tyKInP)) typingP
 
-    Throw   k k' p -> undefined
-    Catch   k k' p -> undefined
-    Cond    e p  q -> undefined
+    Throw k k' p -> do
+        Right tyK' <- lookupName env k'
+        typingP <- check env p
+        Right tyKInP <- M.lookup k typingP
+        return $ M.insert k (Right (TThrow tyK' tyKInP)) typingP
 
-    Par     p q    -> do
+    Catch k k' p -> do
+        typingP <- check env p
+        Right tyKInP <- M.lookup k typingP
+        Right tyK'InP <- M.lookup k' typingP
+        return
+            $ M.insert k (Right (TCatch tyK'InP tyKInP))
+            $ withoutTypingBinding k' typingP
+
+    Cond e p q -> do
+        sortE <- sortExp env e
+        typingP <- check env p
+        typingQ <- check env q
+        if typingP == typingQ && sortE == SBool then
+            return $ composition typingP typingQ
+        else Nothing
+
+    Par p q -> do
         typingP <- check env p
         typingQ <- check env q
         if compatible typingP typingQ then return $ composition typingP typingQ
         else Nothing
 
-    New     n p   -> undefined
+    New a (Left s) p -> check (withEnvNameBinding a (Left s) env) p
+
+    New k (Right t) p -> do
+        typingP <- check env p
+        Right tyKInP <- M.lookup k typingP
+        if tyKInP == TBottom then return $ withoutTypingBinding k typingP
+        else Nothing
+
     Def     n a p -> undefined
     ProcVar n a   -> undefined
     End           -> undefined
