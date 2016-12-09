@@ -19,17 +19,17 @@ data Name = Name String | CoName String
     deriving ( Show , Ord , Eq )
 
 data Proc
-    = Request Name  Name  Proc
-    | Accept  Name  Name  Proc
-    | Send    Name  Exp   Proc
-    | Receive Name  Name  Sort Proc
-    | Throw   Name  Name  Proc
-    | Catch   Name  Name  Proc
-    | Cond    Exp   Proc  Proc
-    | Par     Proc  Proc
-    | New     Name  EST   Proc
-    | Def     Name [Name] Proc
-    | ProcVar Name [Exp ]
+    = Request Name Name Proc
+    | Accept  Name Name Proc
+    | Send    Name Exp  Proc
+    | Receive Name Name Sort Proc
+    | Throw   Name Name Proc
+    | Catch   Name Name Proc
+    | Cond    Exp  Proc Proc
+    | Par     Proc Proc
+    | New     Name EST  Proc
+    | Def     Name Name Proc Proc
+    | ProcVar Name Exp 
     | End
     deriving ( Show , Ord , Eq )
 
@@ -183,6 +183,6 @@ check env proc = case proc of
         if tyKInP == TBottom then return $ withoutTypingBinding k typingP
         else Nothing
 
-    Def     n a p -> undefined
-    ProcVar n a   -> undefined
-    End           -> undefined
+    Def x k p q -> undefined
+    ProcVar n a -> undefined
+    End -> return $ snd env
